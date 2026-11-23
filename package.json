@@ -1,6 +1,6 @@
 {
   "name": "margin-cards",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Obsidian 插件：类 MarginNote 的 PDF 卡片工具",
   "main": "main.js",
   "scripts": {

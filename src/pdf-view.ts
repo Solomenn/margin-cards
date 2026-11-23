@@ -1,4 +1,8 @@
 import { ItemView, Notice, TFile, ViewStateResult, WorkspaceLeaf, loadPdfJs, setIcon } from "obsidian";
+import type MarginCardsPlugin from "./main";
+import { PageViewport, PdfRect, cssRectToPdfRect, pdfRectToCssRect } from "./coords";
+import { colorOf, createCard, listCards, listCategories } from "./cards";
+import { CardDialog } from "./card-dialog";
 
 export const VIEW_TYPE_CARD_PDF = "margin-cards-pdf";
 
@@ -15,6 +19,7 @@ interface PageSlot {
   index: number; // 页码，从 1 开始
   width: number; // 这一页的宽，单位是 PDF 点
   height: number; // 这一页的高，单位是 PDF 点
+  viewport: PageViewport; // 这一页 scale 为 1 的 pdf.js 视图，屏幕和 PDF 点互相换算时用
   el: HTMLDivElement; // 这一页的容器，大小由 CSS 变量 --pw、--ph 和 --mc-scale 决定
   canvas: HTMLCanvasElement | null; // 已经画好的画布；没画或已经释放时是 null
   canvasScale: number; // 这张画布是按哪个 scale 画的
@@ -53,8 +58,16 @@ export class CardPdfView extends ItemView {
   private saveTimer: number | null = null;
   private scrollQueued = false;
 
-  constructor(leaf: WorkspaceLeaf) {
+  private selectTool = false; // 框选工具开着吗
+  private selectBtnEl!: HTMLButtonElement;
+  private boxTimer: number | null = null;
+
+  constructor(leaf: WorkspaceLeaf, private plugin: MarginCardsPlugin) {
     super(leaf);
+  }
+
+  getFilePath(): string | null {
+    return this.filePath;
   }
 
   getViewType(): string {
@@ -119,6 +132,9 @@ export class CardPdfView extends ItemView {
     this.makeButton(bar, "zoom-in", "放大").addEventListener("click", () => this.setScale(this.scale * 1.15));
     this.makeButton(bar, "move-horizontal", "适应宽度").addEventListener("click", () => this.fitWidth());
 
+    this.selectBtnEl = this.makeButton(bar, "crop", "框选做卡片");
+    this.selectBtnEl.addEventListener("click", () => this.setSelectTool(!this.selectTool));
+
     this.tocPanelEl = root.createDiv({ cls: "mc-pdf-toc mc-hidden" });
 
     this.scrollerEl = root.createDiv({ cls: "mc-pdf-scroller" });
@@ -137,6 +153,11 @@ export class CardPdfView extends ItemView {
       { passive: false }
     );
     this.installPinch();
+    this.installSelection();
+
+    // 库里的笔记属性变了（新建、改色、删除卡片）→ 稍等 200 毫秒后重画卡片框
+    this.registerEvent(this.app.metadataCache.on("changed", () => this.scheduleBoxes()));
+    this.registerEvent(this.app.metadataCache.on("deleted", () => this.scheduleBoxes()));
 
     this.observer = new IntersectionObserver((entries) => this.onIntersect(entries), {
       root: this.scrollerEl,
@@ -208,7 +229,7 @@ export class CardPdfView extends ItemView {
       const el = this.pagesEl.createDiv({ cls: "mc-pdf-page" });
       el.style.setProperty("--pw", String(size.width));
       el.style.setProperty("--ph", String(size.height));
-      const slot: PageSlot = { index: i + 1, width: size.width, height: size.height, el, canvas: null, canvasScale: 0, renderTask: null, token: 0 };
+      const slot: PageSlot = { index: i + 1, width: size.width, height: size.height, viewport: size.viewport, el, canvas: null, canvasScale: 0, renderTask: null, token: 0 };
       this.slots.push(slot);
       el.dataset.index = String(slot.index);
     });
@@ -229,6 +250,7 @@ export class CardPdfView extends ItemView {
     }
     this.tocBtnEl.toggleClass("mc-disabled", !this.outline || this.outline.length === 0);
     this.tocPanelEl.addClass("mc-hidden");
+    this.refreshCardBoxes();
 
     // 视图顶部标题和标签页标题都要从"卡片模式 PDF"改成文件名。
     // .view-header-title 是视图顶部标题的元素；updateHeader 刷新标签页标题，类型声明里没有，但 Obsidian 运行时有。
@@ -239,9 +261,9 @@ export class CardPdfView extends ItemView {
   // loadFile 调用。参数 doc：已打开的 pdf.js 文档；token：loadFile 的编号，编号过期说明用户已经换了文件。
   // 每 SIZE_BATCH 页一组，并行读出每一页的宽和高（单位是 PDF 点，已经算上页面自带的旋转）。
   // 返回按页码排列的 [{ width, height }, ...]；中途被换文件时返回 null。
-  private async readPageSizes(doc: any, token: number): Promise<{ width: number; height: number }[] | null> {
+  private async readPageSizes(doc: any, token: number): Promise<{ width: number; height: number; viewport: PageViewport }[] | null> {
     const n: number = doc.numPages;
-    const sizes: { width: number; height: number }[] = new Array(n);
+    const sizes: { width: number; height: number; viewport: PageViewport }[] = new Array(n);
     for (let start = 1; start <= n; start += SIZE_BATCH) {
       const end = Math.min(n, start + SIZE_BATCH - 1);
       const jobs: Promise<void>[] = [];
@@ -249,7 +271,7 @@ export class CardPdfView extends ItemView {
         jobs.push(
           doc.getPage(i).then((p: any) => {
             const v = p.getViewport({ scale: 1 });
-            sizes[i - 1] = { width: v.width, height: v.height };
+            sizes[i - 1] = { width: v.width, height: v.height, viewport: v };
             p.cleanup();
           })
         );
@@ -481,6 +503,176 @@ export class CardPdfView extends ItemView {
       { passive: false }
     );
     this.scrollerEl.addEventListener("touchend", () => (startDist = 0), { passive: true });
+  }
+
+  // 框选按钮调用。参数 on：true 是打开框选工具，false 是关闭。
+  // 打开后：鼠标和笔拖动 = 画框，手指拖动 = 滚动页面；关闭后：鼠标、笔、手指都照常浏览。
+  private setSelectTool(on: boolean): void {
+    this.selectTool = on;
+    this.contentEl.toggleClass("mc-selecting-mode", on);
+    this.selectBtnEl.toggleClass("is-active", on);
+  }
+
+  // onOpen 调用。在页面区域装上画框用的指针事件。
+  // 框选工具开着时：
+  //   鼠标或笔按下 → 记下按在哪一页的哪个位置；移动 → 画一个虚线框（不超出这一页）；抬起 → 弹出小窗
+  //   手指按下 → 不画框，手指移动多少，页面就跟着滚动多少
+  //   框的宽或高小于 8 像素 → 当作误触，丢掉，不弹小窗
+  // 框选工具关着时：什么也不做。
+  // 例：在第 3 页上从 (100, 80) 拖到 (400, 260) 抬起 → 弹出小窗；小窗点确定后，按这个框建卡片。
+  private installSelection(): void {
+    let slot: PageSlot | null = null;
+    let box: HTMLDivElement | null = null;
+    let bounds: DOMRect | null = null;
+    let startX = 0;
+    let startY = 0;
+
+    const touches = new Set<number>(); // 正按在屏幕上的手指
+    let panX = 0;
+    let panY = 0;
+    let panLeft = 0;
+    let panTop = 0;
+
+    // 参数 e：指针事件。返回指针在这一页里的位置（屏幕像素，原点在页面左上角，限制在页面范围内）。
+    const pointInPage = (e: PointerEvent) => ({
+      x: Math.min(Math.max(e.clientX - bounds!.left, 0), bounds!.width),
+      y: Math.min(Math.max(e.clientY - bounds!.top, 0), bounds!.height),
+    });
+
+    this.pagesEl.addEventListener("pointerdown", (e) => {
+      if (!this.selectTool) return;
+      if (e.pointerType === "touch") {
+        touches.add(e.pointerId);
+        panX = e.clientX;
+        panY = e.clientY;
+        panLeft = this.scrollerEl.scrollLeft;
+        panTop = this.scrollerEl.scrollTop;
+        return;
+      }
+      if (e.button !== 0) return;
+      const pageEl = (e.target as HTMLElement).closest<HTMLElement>(".mc-pdf-page");
+      if (!pageEl) return;
+
+      e.preventDefault();
+      this.pagesEl.setPointerCapture(e.pointerId);
+      slot = this.slots[Number(pageEl.dataset.index) - 1];
+      bounds = pageEl.getBoundingClientRect();
+      ({ x: startX, y: startY } = pointInPage(e));
+      box = pageEl.createDiv({ cls: "mc-selecting" });
+    });
+
+    this.pagesEl.addEventListener("pointermove", (e) => {
+      if (!this.selectTool) return;
+      if (e.pointerType === "touch") {
+        // 只有一根手指时才滚动；两根手指是捏合缩放，交给 installPinch
+        if (touches.size === 1) {
+          this.scrollerEl.scrollLeft = panLeft - (e.clientX - panX);
+          this.scrollerEl.scrollTop = panTop - (e.clientY - panY);
+        }
+        return;
+      }
+      if (!box) return;
+      const { x, y } = pointInPage(e);
+      box.style.left = `${Math.min(startX, x)}px`;
+      box.style.top = `${Math.min(startY, y)}px`;
+      box.style.width = `${Math.abs(x - startX)}px`;
+      box.style.height = `${Math.abs(y - startY)}px`;
+    });
+
+    const finish = (e: PointerEvent) => {
+      if (e.pointerType === "touch") {
+        touches.delete(e.pointerId);
+        return;
+      }
+      if (!box || !slot) return;
+      const { x, y } = pointInPage(e);
+      const css = { left: Math.min(startX, x), top: Math.min(startY, y), width: Math.abs(x - startX), height: Math.abs(y - startY) };
+      const doneBox = box;
+      const doneSlot = slot;
+      box = slot = null;
+
+      if (e.type === "pointercancel" || css.width < 8 || css.height < 8) {
+        doneBox.remove();
+        return;
+      }
+      this.askCard(doneSlot, cssRectToPdfRect(doneSlot.viewport, css, this.scale), doneBox);
+    };
+    this.pagesEl.addEventListener("pointerup", finish);
+    this.pagesEl.addEventListener("pointercancel", finish);
+  }
+
+  // 框选完成后调用。参数 slot：框在哪一页；rect：框（PDF 点）；selectBox：页面上的虚线框。
+  // 弹出小窗让用户选类型、颜色、分类。
+  //   点确定 → 建卡片（图片和笔记），失败时弹出提示
+  //   取消 → 什么也不建
+  // 小窗关闭时，虚线框一并删掉。
+  private askCard(slot: PageSlot, rect: PdfRect, selectBox: HTMLElement): void {
+    const pdfFile = this.filePath ? this.app.vault.getAbstractFileByPath(this.filePath) : null;
+    if (!(pdfFile instanceof TFile)) {
+      selectBox.remove();
+      return;
+    }
+    new CardDialog(
+      this.app,
+      listCategories(this.app, this.plugin.settings),
+      async (choice) => {
+        try {
+          await createCard(this.app, this.plugin.settings, pdfFile, this.pdfDoc, slot.index, rect, choice);
+          this.scheduleBoxes();
+        } catch (err) {
+          new Notice("建卡片失败，详情见开发者控制台");
+          console.error("margin-cards: 建卡片失败", err);
+        }
+      },
+      () => selectBox.remove()
+    ).open();
+  }
+
+  // 笔记属性变化时调用。重复触发时，只在最后一次触发 200 毫秒后重画一次。
+  private scheduleBoxes(): void {
+    if (this.boxTimer !== null) window.clearTimeout(this.boxTimer);
+    this.boxTimer = window.setTimeout(() => this.refreshCardBoxes(), 200);
+  }
+
+  // 参数 el：要定位的元素；slot：它在哪一页；rect：位置（PDF 点）。
+  // 把位置写成 CSS 变量 --rx、--ry、--rw、--rh（单位是 scale 为 1 时的像素），元素的实际大小再乘 --mc-scale，缩放时自动跟着变。
+  private placeBox(el: HTMLElement, slot: PageSlot, rect: PdfRect): void {
+    const css = pdfRectToCssRect(slot.viewport, rect, 1);
+    el.style.setProperty("--rx", String(css.left));
+    el.style.setProperty("--ry", String(css.top));
+    el.style.setProperty("--rw", String(css.width));
+    el.style.setProperty("--rh", String(css.height));
+  }
+
+  // 打开文件、建好卡片或卡片属性变化后调用。把页面上所有卡片框删掉，按库里的卡片重画：
+  // 每张卡片在它的页上画一个半透明框，颜色是卡片的"颜色"属性，没有颜色的画灰色。点框打开卡片笔记。
+  refreshCardBoxes(): void {
+    this.pagesEl.querySelectorAll(".mc-card-box").forEach((el) => el.remove());
+    if (!this.filePath) return;
+    for (const card of listCards(this.app, this.plugin.settings, this.filePath)) {
+      const slot = this.slots[card.page - 1];
+      if (!slot) continue;
+      const box = slot.el.createDiv({ cls: "mc-card-box" });
+      this.placeBox(box, slot, card.rect);
+      box.style.setProperty("--mc-c", colorOf(card.color));
+      box.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void this.plugin.openCard(card.file);
+      });
+    }
+  }
+
+  // 卡片笔记里的"回到原文"调用。参数 page：页码；rect：框（PDF 点）。
+  // 把这一页滚到屏幕上，让框落在屏幕上方四分之一处，然后让框闪一下。
+  revealRect(page: number, rect: PdfRect): void {
+    const slot = this.slots[page - 1];
+    if (!slot) return;
+    const css = pdfRectToCssRect(slot.viewport, rect, this.scale);
+    this.scrollerEl.scrollTop = this.slotTop(slot) + css.top - this.scrollerEl.clientHeight / 4;
+
+    const flash = slot.el.createDiv({ cls: "mc-flash" });
+    this.placeBox(flash, slot, rect);
+    window.setTimeout(() => flash.remove(), 1500);
   }
 
   // 目录按钮调用。目录面板显示着 → 收起；收起着 → 展开并重新列出目录。没有目录时什么也不做。

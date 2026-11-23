@@ -101,3 +101,104 @@
 .mc-pdf-toc-item:hover {
   background: var(--background-modifier-hover);
 }
+
+/* 框选工具开着：页面区域不让浏览器处理触摸滚动（手指滚动由脚本接管），卡片框不挡鼠标 */
+.mc-selecting-mode .mc-pdf-pages {
+  touch-action: none;
+  cursor: crosshair;
+  user-select: none;
+}
+
+.mc-selecting-mode .mc-card-box {
+  pointer-events: none;
+}
+
+.mc-pdf-btn.is-active {
+  background: var(--background-modifier-hover);
+  color: var(--interactive-accent);
+}
+
+/* 框选时拖出来的虚线框 */
+.mc-selecting {
+  position: absolute;
+  z-index: 3;
+  border: 1.5px dashed var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  pointer-events: none;
+}
+
+/* 已建好的卡片框和跳转时闪的框：位置和大小由 --rx --ry --rw --rh（缩放为 1 时的像素）乘 --mc-scale 得到 */
+.mc-card-box,
+.mc-flash {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  left: calc(var(--rx) * var(--mc-scale) * 1px);
+  top: calc(var(--ry) * var(--mc-scale) * 1px);
+  width: calc(var(--rw) * var(--mc-scale) * 1px);
+  height: calc(var(--rh) * var(--mc-scale) * 1px);
+}
+
+.mc-card-box {
+  --mc-c: #8a8a8a;
+  border: 2px solid var(--mc-c);
+  background: color-mix(in srgb, var(--mc-c) 22%, transparent);
+  cursor: pointer;
+}
+
+.mc-flash {
+  z-index: 2;
+  pointer-events: none;
+  border: 3px solid var(--interactive-accent);
+  animation: mc-flash 1.5s ease-out;
+}
+
+@keyframes mc-flash {
+  0%,
+  40% {
+    background: color-mix(in srgb, var(--interactive-accent) 45%, transparent);
+  }
+  20%,
+  60% {
+    background: transparent;
+  }
+  100% {
+    background: transparent;
+    opacity: 0;
+  }
+}
+
+/* 框选小窗 */
+.mc-dialog {
+  width: 260px;
+  padding: 12px;
+}
+
+.mc-dialog-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+
+.mc-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.mc-swatch.is-selected {
+  outline: 3px solid var(--text-normal);
+  outline-offset: 2px;
+}
+
+.mc-dialog-input {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.mc-dialog-ok {
+  width: 100%;
+}
