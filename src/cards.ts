@@ -15,6 +15,13 @@ export const COLORS = [
 
 const NO_COLOR_HEX = "#8a8a8a";
 
+// 参数 name：卡片的颜色名，没选颜色是 null。返回对应的 Canvas 预设色编号 "1"～"6"；没有颜色或不认识 → undefined。
+// 例："红" → "1"，"绿" → "4"。
+export function colorNumber(name?: string | null): string | undefined {
+  const i = COLORS.findIndex((c) => c.name === name);
+  return i >= 0 ? String(i + 1) : undefined;
+}
+
 // 参数 name：卡片的"颜色"属性值，可能是 undefined。返回对应的显示色；没有颜色或不认识时返回灰色。
 export function colorOf(name?: string): string {
   return COLORS.find((c) => c.name === name)?.hex ?? NO_COLOR_HEX;

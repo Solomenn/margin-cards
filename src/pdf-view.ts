@@ -135,6 +135,10 @@ export class CardPdfView extends ItemView {
     this.selectBtnEl = this.makeButton(bar, "crop", "框选做卡片");
     this.selectBtnEl.addEventListener("click", () => this.setSelectTool(!this.selectTool));
 
+    this.makeButton(bar, "columns-2", "并排打开 PDF 和脑图").addEventListener("click", () => {
+      if (this.filePath) void this.plugin.openSideBySide(this.filePath);
+    });
+
     this.tocPanelEl = root.createDiv({ cls: "mc-pdf-toc mc-hidden" });
 
     this.scrollerEl = root.createDiv({ cls: "mc-pdf-scroller" });
@@ -617,7 +621,8 @@ export class CardPdfView extends ItemView {
       listCategories(this.app, this.plugin.settings),
       async (choice) => {
         try {
-          await createCard(this.app, this.plugin.settings, pdfFile, this.pdfDoc, slot.index, rect, choice);
+          const cardFile = await createCard(this.app, this.plugin.settings, pdfFile, this.pdfDoc, slot.index, rect, choice);
+          await this.plugin.addCardToCanvas(pdfFile, cardFile, choice.color);
           this.scheduleBoxes();
         } catch (err) {
           new Notice("建卡片失败，详情见开发者控制台");
@@ -657,7 +662,7 @@ export class CardPdfView extends ItemView {
       box.style.setProperty("--mc-c", colorOf(card.color));
       box.addEventListener("click", (e) => {
         e.stopPropagation();
-        void this.plugin.openCard(card.file);
+        void this.plugin.onCardBoxClick(card);
       });
     }
   }

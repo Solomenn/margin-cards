@@ -3,10 +3,12 @@ import type MarginCardsPlugin from "./main";
 
 export interface MarginCardsSettings {
   cardsFolder: string; // 卡片、图片、手写、脑图都放在库里的这个文件夹下
+  placement: "right" | "group"; // 新卡片在脑图里放哪："right" 是所有节点右边，"group" 是用户在脑图里选中的分组框里
 }
 
 export const DEFAULT_SETTINGS: MarginCardsSettings = {
   cardsFolder: "卡片",
+  placement: "right",
 };
 
 export class MarginCardsSettingTab extends PluginSettingTab {
@@ -25,6 +27,17 @@ export class MarginCardsSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           const cleaned = value.trim().replace(/^\/+|\/+$/g, "");
           this.plugin.settings.cardsFolder = cleaned || DEFAULT_SETTINGS.cardsFolder;
+          await this.plugin.saveSettings();
+        })
+    );
+
+    new Setting(this.containerEl).setName("新卡片放在脑图的").addDropdown((dd) =>
+      dd
+        .addOption("right", "所有节点右边")
+        .addOption("group", "当前选中的分组框里")
+        .setValue(this.plugin.settings.placement)
+        .onChange(async (value) => {
+          this.plugin.settings.placement = value as "right" | "group";
           await this.plugin.saveSettings();
         })
     );

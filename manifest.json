@@ -1,7 +1,7 @@
 {
   "id": "margin-cards",
   "name": "Margin Cards",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minAppVersion": "1.5.0",
   "description": "类 MarginNote：用自己的 PDF 视图读书，框选做卡片，脑图，手写。",
   "author": "Solomenn",
